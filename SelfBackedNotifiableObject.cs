@@ -13,13 +13,6 @@ namespace P42.NotifiableObject
         [JsonIgnore]
         private Dictionary<string, object> ObjectStore = new Dictionary<string, object>();
 
-        protected T GetValue<T>([CallerMemberName] string propertyName = null)
-        {
-            if (ObjectStore.TryGetValue(propertyName, out object value))
-                return (T)value;
-            return default;
-        }
-
         protected T GetValue<T>(T defaultValue = default, [CallerMemberName] string propertyName = null)
         {
             if (ObjectStore.TryGetValue(propertyName, out object value))
@@ -29,7 +22,7 @@ namespace P42.NotifiableObject
 
         protected bool SetValue<T>(T value, [CallerMemberName] string propertyName = null)
         {
-            var current = GetValue<T>(propertyName);
+            var current = GetValue<T>(default, propertyName);
             if (EqualityComparer<T>.Default.Equals(current, value))
                 return false;
 
