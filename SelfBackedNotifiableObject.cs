@@ -1,9 +1,6 @@
-using System;
+using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.Runtime.CompilerServices;
-using System.Runtime.Serialization;
-using System.Dynamic;
 using Newtonsoft.Json;
 
 namespace P42.NotifiableObject
@@ -11,26 +8,37 @@ namespace P42.NotifiableObject
     public abstract class SelfBackedNotifiablePropertyObject : BaseNotifiablePropertyObject
     {
         [JsonIgnore]
-        private Dictionary<string, object> ObjectStore = new Dictionary<string, object>();
+        private readonly System.Threading.Lock _valueLock = new ();
+        
+        [JsonIgnore]
+        private readonly ConcurrentDictionary<string, object> _objectStore = new();
 
-        protected T GetValue<T>(T defaultValue = default, [CallerMemberName] string propertyName = null)
+        protected T? GetValue<T>(T? defaultValue = default, [CallerMemberName] string propertyName = "")
         {
-            if (ObjectStore.TryGetValue(propertyName, out object value))
+            if (string.IsNullOrWhiteSpace(propertyName))
+                return defaultValue;    
+            
+            if (_objectStore.TryGetValue(propertyName, out var value))
                 return (T)value;
             return defaultValue;
         }
 
-        protected bool SetValue<T>(T value, [CallerMemberName] string propertyName = null)
+        protected bool SetValue<T>(T value, [CallerMemberName] string propertyName = "")
         {
-            var current = GetValue<T>(default, propertyName);
-            if (EqualityComparer<T>.Default.Equals(current, value))
-                return false;
+            if (string.IsNullOrWhiteSpace(propertyName))
+                return false;    
+            
+            lock (_valueLock)
+            {
+                if (EqualityComparer<T>.Default.Equals(GetValue<T>(default, propertyName), value))
+                    return false;
 
-            ObjectStore[propertyName] = value;
+                _objectStore[propertyName] = value!;
 
-            HasChanged = true;
-            OnPropertyChanged(propertyName);
-            return true;
+                HasChanged = true;
+                OnPropertyChanged(propertyName);
+                return true;
+            }        
         }
 
     }

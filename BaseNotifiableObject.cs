@@ -1,9 +1,9 @@
-﻿using System;
+﻿using System.Collections.Concurrent;
 using System.Collections.Generic;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 using System.Runtime.Serialization;
-using System.Dynamic;
+using System.Threading;
 using Newtonsoft.Json;
 
 namespace P42.NotifiableObject
@@ -11,60 +11,130 @@ namespace P42.NotifiableObject
     public abstract class BaseNotifiablePropertyObject : INotifyPropertyChanged
     {
         [JsonIgnore]
+        private static readonly Lock ClassLock = new ();
+
+        [JsonIgnore]
+        public static SynchronizationContext? SyncContext
+        {
+            get
+            {
+                lock (ClassLock)
+                    return field;
+            }
+            set 
+            {
+                lock (ClassLock)
+                    field = value;
+            }
+        } 
+        
+        [JsonIgnore]
+        // ReSharper disable once MemberCanBePrivate.Global
         public static long Instances { get; private set; }
 
         [JsonIgnore]
+        private readonly Lock _lock = new();
+        
+        [JsonIgnore]
+        // ReSharper disable once UnusedAutoPropertyAccessor.Global
         public long InstanceId { get; private set; }
 
         [JsonIgnore]
+        // ReSharper disable once UnassignedGetOnlyAutoProperty
         public virtual bool Logging { get; }
 
-        protected List<string> BatchedPropertyChanges = new List<string>();
+        // ReSharper disable once MemberCanBePrivate.Global
+        protected ConcurrentQueue<string> BatchedPropertyChanges { get; } = new ConcurrentQueue<string>();
 
-        int _batchChanges;
+        private int _batchChanges;
         [JsonIgnore]
         public bool BatchChanges
         {
-            get => _batchChanges > 0;
+            get
+            {
+                lock (_lock)
+                    return _batchChanges > 0;
+            }
             set
             {
-                if (value)
-                    _batchChanges++;
-                else
-                    _batchChanges--;
-                _batchChanges = Math.Max(0, _batchChanges);
-                if (_batchChanges == 0)
+                lock (_lock)
                 {
-                    var propertyNames = new List<string>(BatchedPropertyChanges);
-                    BatchedPropertyChanges.Clear();
-                    foreach (var propertyName in propertyNames)
-                        OnPropertyChanged(propertyName);
+                    if (value)
+                        _batchChanges++;
+                    else if (_batchChanges > 0)
+                        _batchChanges--;
+                    if (_batchChanges != 0) 
+                        return;
                 }
+
+                while (BatchedPropertyChanges.TryDequeue(out var name))
+                    OnPropertyChanged(name);
+                
             }
         }
 
         [JsonIgnore]
-        public bool HasChanged { get; set; }
+        public bool HasChanged
+        {
+            get
+            {
+                lock (_lock)
+                    return field;
+            }
+            protected set
+            {
+                if (_deserializing)
+                    return;
+                
+                lock (_lock)
+                    field = value;
+            }
+        }
 
+        private bool _deserializing;
+        
+        [OnDeserializing]
+        internal void OnDeserializing(StreamingContext context)
+            => _deserializing = true;
         [OnDeserialized]
         internal void OnDeserializedMethod(StreamingContext context)
-            => HasChanged = false;
+            => _deserializing = false;
 
 
         internal BaseNotifiablePropertyObject()
         {
-            InstanceId = Instances++;
+            lock (ClassLock)
+            {
+                InstanceId = Instances++;
+            }
         }
 
         #region Property Change Handler
-        public event PropertyChangedEventHandler PropertyChanged;
-
-        protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = null)
+        //public event PropertyChangedEventHandler PropertyChanged;
+        private readonly AsyncAwaitBestPractices.WeakEventManager _propertyChangedEventManager = new();
+        public event PropertyChangedEventHandler? PropertyChanged
         {
+            add => _propertyChangedEventManager.AddEventHandler(value);
+            remove => _propertyChangedEventManager.RemoveEventHandler(value);
+        }
+
+        protected virtual void OnPropertyChanged([CallerMemberName] string propertyName = "")
+        {
+            if (_deserializing)
+                return;
+            
             if (BatchChanges)
-                BatchedPropertyChanges.Add(propertyName);
+            {
+                BatchedPropertyChanges.Enqueue(propertyName);
+                return;
+            }
+            
+            var context = SyncContext;
+            if (context == null)
+                _propertyChangedEventManager.RaiseEvent(propertyName);
             else
-                PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
+                context.Post(_ => _propertyChangedEventManager.RaiseEvent(propertyName), null);
+            
         }
 
 
