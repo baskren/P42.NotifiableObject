@@ -13,11 +13,13 @@ namespace P42.NotifiableObject
         [JsonIgnore]
         private readonly ConcurrentDictionary<string, object> _objectStore = new();
 
+        // ReSharper disable once MemberCanBePrivate.Global
         protected T? GetValue<T>(T? defaultValue = default, [CallerMemberName] string propertyName = "")
         {
             if (string.IsNullOrWhiteSpace(propertyName))
                 return defaultValue;    
             
+            // ReSharper disable once InconsistentlySynchronizedField
             if (_objectStore.TryGetValue(propertyName, out var value))
                 return (T)value;
             return defaultValue;
